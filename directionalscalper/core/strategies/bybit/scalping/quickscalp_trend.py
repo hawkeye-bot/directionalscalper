@@ -114,7 +114,7 @@ class BybitQuickScalpTrend(Strategy):
 
             self.adjust_risk_parameters(exchange_max_leverage=self.max_leverage)
 
-            self.exchange.set_leverage_bybit(self.max_leverage, symbol)
+            self.exchange.set_leverage_bybit(4, symbol)
             self.exchange.set_symbol_to_cross_margin(symbol, self.max_leverage)
 
             logging.info(f"Running for symbol (inside run_single_symbol method): {symbol}")
