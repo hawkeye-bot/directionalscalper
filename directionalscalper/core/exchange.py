@@ -1,6 +1,8 @@
 import os
 import logging
 import time
+import ta as ta
+import uuid
 import ccxt
 import pandas as pd
 import json
@@ -47,7 +49,7 @@ class Exchange:
             for _ in range(self.max_retries):
                 try:
                     all_open_orders = self.parent.exchange.fetch_open_orders(symbol)
-                    logging.info(f"All open orders for {symbol}: {all_open_orders}")
+                    #logging.info(f"All open orders for {symbol}: {all_open_orders}")
                     
                     for order in all_open_orders:
                         order_details = {
@@ -145,26 +147,50 @@ class Exchange:
             'adjustForTimeDifference': True,
         }
 
+        # Add the brokerId option only for Bybit exchanges
+        if self.exchange_id.lower().startswith('bybit'):
+            exchange_params['options']['brokerId'] = 'Nu000450'
+
         # Existing condition for Huobi
         if self.exchange_id.lower() == 'huobi' and self.market_type == 'swap':
             exchange_params['options']['defaultSubType'] = 'linear'
-        
-        # Existing condition for Bybit unified
-        # if self.exchange_id.lower() == 'bybit_unified':
-        #     exchange_params['options']['enableUnifiedMargin'] = True
 
         # Initializing the exchange object
         self.exchange = exchange_class(exchange_params)
+        
+    
+    def transfer_funds_bybit(self, code: str, amount: float, from_account: str, to_account: str, params={}):
+        """
+        Transfer funds between different account types under the same UID.
 
-        # Uncomment and adjust the URLs if you need to connect to Bybit's testnet
-        #if self.exchange_id.lower() == 'bybit_spot':
-        #    exchange_params['urls'] = {
-        #        'api': 'https://api-testnet.bybit.com',
-        #        'public': 'https://api-testnet.bybit.com',
-        #        'private': 'https://api-testnet.bybit.com',
-        #    }
+        :param str code: Unified currency code
+        :param float amount: Amount to transfer
+        :param str from_account: From account type (e.g., 'UNIFIED', 'CONTRACT')
+        :param str to_account: To account type (e.g., 'SPOT', 'CONTRACT')
+        :param dict params: Extra parameters specific to the exchange API endpoint
+        :return: A transfer structure
+        """
+        try:
+            # Generate a unique transfer ID (UUID)
+            transfer_id = str(uuid.uuid4())
 
+            # Add the transfer ID to the params dictionary
+            params['transferId'] = transfer_id
 
+            # Use CCXT's transfer function to initiate the internal transfer
+            transfer = self.exchange.transfer(code, amount, from_account, to_account, params)
+
+            if transfer:
+                logging.info(f"Funds transfer successful. Details: {transfer}")
+                return transfer
+            else:
+                logging.error(f"Error occurred during funds transfer.")
+                return None
+
+        except Exception as e:
+            logging.error(f"Error occurred during funds transfer: {e}")
+            return None
+        
     def update_order_history(self, symbol, order_id, timestamp):
         with self.entry_order_ids_lock:
             # Check if the symbol is already in the order history
@@ -798,6 +824,27 @@ class Exchange:
                 time.sleep(delay)
         raise Exception(f"Failed to execute the API function after {max_retries} retries.")
 
+## v5
+
+    def get_balance_bybit_spot(self, quote):
+        if self.exchange.has['fetchBalance']:
+            try:
+                # Specify the type as 'spot' for spot trading
+                balance_response = self.exchange.fetch_balance({'type': 'spot'})
+
+                # Logging the raw response for debugging might be useful
+                # logging.info(f"Raw balance response from Bybit: {balance_response}")
+
+                # Parse the balance for the quote currency
+                if quote in balance_response['total']:
+                    total_balance = balance_response['total'][quote]
+                    return total_balance
+                else:
+                    logging.warning(f"Balance for {quote} not found in the response.")
+            except Exception as e:
+                logging.error(f"Error fetching balance from Bybit: {e}")
+
+        return None
 
 ## v5
     def get_balance_bybit(self, quote):
@@ -2817,6 +2864,40 @@ class Exchange:
         except Exception as e:
             logging.warning(f"An unknown error occurred in create_limit_order(): {e}")
 
+    def create_tagged_limit_order_bybit(self, symbol: str, side: str, qty: float, price: float, positionIdx=0, isLeverage=False, orderLinkId=None, postOnly=True, params={}):
+        try:
+            # Directly prepare the parameters required by the `create_order` method
+            order_type = "limit"  # For limit orders
+            time_in_force = "PostOnly" if postOnly else "GTC"
+            
+            # Include additional parameters
+            extra_params = {
+                "positionIdx": positionIdx,
+                "timeInForce": time_in_force
+            }
+            if isLeverage:
+                extra_params["isLeverage"] = 1
+            if orderLinkId:
+                extra_params["orderLinkId"] = orderLinkId
+            
+            # Merge any additional user-provided parameters
+            extra_params.update(params)
+
+            # Create the order
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type=order_type,
+                side=side,
+                amount=qty,
+                price=price,
+                params=extra_params  # Pass extra params here
+            )
+            return order
+        except Exception as e:
+            logging.warning(f"An error occurred in create_tagged_limit_order_bybit() for {symbol}: {e}")
+            return {"error": str(e)}
+
+
     def create_limit_order_bybit(self, symbol: str, side: str, qty: float, price: float, positionIdx=0, params={}):
         try:
             if side == "buy" or side == "sell":
@@ -2836,23 +2917,32 @@ class Exchange:
             logging.warning(f"An unknown error occurred in create_limit_order() for {symbol}: {e}")
             return {"error": str(e)}
 
-    # # Bybit
-    # def create_limit_order_bybit(self, symbol: str, side: str, qty: float, price: float, positionIdx=0, params={}):
-    #     try:
-    #         if side == "buy" or side == "sell":
-    #             order = self.exchange.create_order(
-    #                 symbol=symbol,
-    #                 type='limit',
-    #                 side=side,
-    #                 amount=qty,
-    #                 price=price,
-    #                 params={**params, 'positionIdx': positionIdx}  # Pass the 'positionIdx' parameter here
-    #             )
-    #             return order
-    #         else:
-    #             logging.warning(f"side {side} does not exist")
-    #     except Exception as e:
-    #         logging.warning(f"An unknown error occurred in create_limit_order(): {e}")
+    def create_limit_order_bybit_spot(self, symbol: str, side: str, qty: float, price: float, isLeverage=0, orderLinkId=None):
+        try:
+            # Define the 'params' dictionary to include any additional parameters required by Bybit's v5 API
+            params = {
+                'timeInForce': 'PostOnly',  # Set the order as a PostOnly order
+                'isLeverage': isLeverage,   # Specify whether to borrow for margin trading
+            }
+            
+            # If 'orderLinkId' is provided, add it to the 'params' dictionary
+            if orderLinkId:
+                params['orderLinkId'] = orderLinkId
+
+            # Create the limit order using CCXT's 'create_order' function
+            order = self.exchange.create_order(
+                symbol=symbol,
+                type='limit',
+                side=side,
+                amount=qty,
+                price=price,
+                params=params
+            )
+            
+            return order
+        except Exception as e:
+            logging.error(f"An error occurred while creating limit order on Bybit: {e}")
+            return None
 
     def set_hedge_mode_binance(self):
         """

@@ -1,5 +1,5 @@
 colorama
-ccxt==4.2.1
+ccxt==4.2.65
 pandas
 pydantic
 python-pidfile
@@ -10,3 +10,4 @@ streamlit
 plotly
 inquirer
 pytz
+uuid

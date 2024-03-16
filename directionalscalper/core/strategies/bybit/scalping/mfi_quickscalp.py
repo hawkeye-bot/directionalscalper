@@ -32,6 +32,7 @@ class BybitMFIRSIQuickScalp(Strategy):
         self.helper_interval = 1
         self.position_inactive_threshold = 120
         try:
+            self.upnl_threshold_pct = self.config.upnl_threshold_pct
             self.max_usd_value = self.config.max_usd_value
             self.blacklist = self.config.blacklist
             self.test_orders_enabled = self.config.test_orders_enabled
@@ -121,6 +122,8 @@ class BybitMFIRSIQuickScalp(Strategy):
             
             min_dist = self.config.min_distance
             min_vol = self.config.min_volume
+
+            upnl_threshold_pct = self.config.upnl_threshold_pct
 
             upnl_profit_pct = self.config.upnl_profit_pct
 
@@ -425,23 +428,25 @@ class BybitMFIRSIQuickScalp(Strategy):
 
                     try:
                         self.auto_reduce_logic_simple(
+                            symbol,
                             min_qty,
                             long_pos_price,
                             short_pos_price,
                             long_pos_qty,
                             short_pos_qty,
                             auto_reduce_enabled,
-                            symbol,
                             total_equity,
-                            open_position_data,
-                            current_price,
-                            long_dynamic_amount,
-                            short_dynamic_amount,
-                            auto_reduce_start_pct,
-                            max_pos_balance_pct
+                            available_equity,
+                            current_market_price=current_price,
+                            long_dynamic_amount=long_dynamic_amount,
+                            short_dynamic_amount=short_dynamic_amount,
+                            auto_reduce_start_pct=auto_reduce_start_pct,
+                            max_pos_balance_pct=max_pos_balance_pct,
+                            upnl_threshold_pct=upnl_threshold_pct,
+                            shared_symbols_data=shared_symbols_data
                         )
                     except Exception as e:
-                        logging.info(f"Exception caught in autoreduce: {e}")
+                        logging.info(f"Exception caught in autoreduce")
 
                     self.auto_reduce_percentile_logic(
                         symbol,

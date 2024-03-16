@@ -11,11 +11,11 @@ from datetime import datetime, timedelta
 from directionalscalper.core.strategies.strategy import Strategy
 from directionalscalper.core.strategies.logger import Logger
 from live_table_manager import shared_symbols_data
-logging = Logger(logger_name="BybitQuickScalpUnified", filename="BybitQuickScalpUnified.log", stream=True)
+logging = Logger(logger_name="BybitQuickScalpTrendDCA", filename="BybitQuickScalpTrendDCA.log", stream=True)
 
 symbol_locks = {}
 
-class BybitQuickScalpUnified(Strategy):
+class BybitQuickScalpTrendDCA(Strategy):
     def __init__(self, exchange, manager, config, symbols_allowed=None):
         super().__init__(exchange, config, manager, symbols_allowed)
         self.is_order_history_populated = False
@@ -125,12 +125,12 @@ class BybitQuickScalpUnified(Strategy):
             quote_currency = "USDT"
             max_retries = 5
             retry_delay = 5
+
+            upnl_threshold_pct = self.config.upnl_threshold_pct
             
             volume_check = self.config.volume_check
             min_dist = self.config.min_distance
             min_vol = self.config.min_volume
-
-            upnl_threshold_pct = self.config_upnl_threshold_pct
 
             upnl_profit_pct = self.config.upnl_profit_pct
 
@@ -353,8 +353,6 @@ class BybitQuickScalpUnified(Strategy):
 
                 # self.check_for_inactivity(long_pos_qty, short_pos_qty)
 
-                time.sleep(5)
-
                 # self.print_trade_quantities_once_bybit(symbol, total_equity, best_ask_price)
 
                 logging.info(f"Rotator symbols standardized: {rotator_symbols_standardized}")
@@ -460,16 +458,16 @@ class BybitQuickScalpUnified(Strategy):
                             auto_reduce_enabled,
                             total_equity,
                             available_equity,
-                            current_market_price=current_price,
-                            long_dynamic_amount=long_dynamic_amount,
-                            short_dynamic_amount=short_dynamic_amount,
-                            auto_reduce_start_pct=auto_reduce_start_pct,
-                            max_pos_balance_pct=max_pos_balance_pct,
-                            upnl_threshold_pct=upnl_threshold_pct,
-                            shared_symbols_data=shared_symbols_data
+                            current_price,
+                            long_dynamic_amount,
+                            short_dynamic_amount,
+                            auto_reduce_start_pct,
+                            max_pos_balance_pct,
+                            upnl_threshold_pct,
+                            shared_symbols_data
                         )
                     except Exception as e:
-                        logging.info(f"Exception caught in autoreduce")
+                        logging.info(f"Exception caught in autoreduce: {e}")
 
                     self.auto_reduce_percentile_logic(
                         symbol,
@@ -584,7 +582,7 @@ class BybitQuickScalpUnified(Strategy):
                         except Exception as e:
                             logging.info(f"Exception fetching Short UPNL for {symbol}: {e}")
 
-                    self.bybit_1m_mfi_quickscalp_trend(
+                    self.bybit_1m_mfi_quickscalp_trend_dca(
                         open_orders,
                         symbol,
                         min_vol,
@@ -683,8 +681,6 @@ class BybitQuickScalpUnified(Strategy):
                     self.cancel_entries_bybit(symbol, best_ask_price, moving_averages["ma_1m_3_high"], moving_averages["ma_5m_3_high"])
                     # self.cancel_stale_orders_bybit(symbol)
 
-                    time.sleep(5)
-
                 symbol_data = {
                     'symbol': symbol,
                     'min_qty': min_qty,
@@ -716,7 +712,7 @@ class BybitQuickScalpUnified(Strategy):
                 iteration_duration = iteration_end_time - iteration_start_time
                 logging.info(f"Iteration for symbol {symbol} took {iteration_duration:.2f} seconds")
 
-                time.sleep(5)
+                time.sleep(3)
         except Exception as e:
             traceback_info = traceback.format_exc()  # Get the full traceback
             logging.error(f"Exception caught in quickscalp strategy '{symbol}': {e}\nTraceback:\n{traceback_info}")

@@ -11,11 +11,11 @@ from datetime import datetime, timedelta
 from directionalscalper.core.strategies.strategy import Strategy
 from directionalscalper.core.strategies.logger import Logger
 from live_table_manager import shared_symbols_data
-logging = Logger(logger_name="BybitQuickScalpUnified", filename="BybitQuickScalpUnified.log", stream=True)
+logging = Logger(logger_name="BybitQSTrendDoubleMA", filename="BybitQSTrendDoubleMA.log", stream=True)
 
 symbol_locks = {}
 
-class BybitQuickScalpUnified(Strategy):
+class BybitQSTrendDoubleMA(Strategy):
     def __init__(self, exchange, manager, config, symbols_allowed=None):
         super().__init__(exchange, config, manager, symbols_allowed)
         self.is_order_history_populated = False
@@ -130,8 +130,7 @@ class BybitQuickScalpUnified(Strategy):
             min_dist = self.config.min_distance
             min_vol = self.config.min_volume
 
-            upnl_threshold_pct = self.config_upnl_threshold_pct
-
+            upnl_threshold_pct = self.config.upnl_threshold_pct
             upnl_profit_pct = self.config.upnl_profit_pct
 
             # Stop loss
@@ -353,8 +352,6 @@ class BybitQuickScalpUnified(Strategy):
 
                 # self.check_for_inactivity(long_pos_qty, short_pos_qty)
 
-                time.sleep(5)
-
                 # self.print_trade_quantities_once_bybit(symbol, total_equity, best_ask_price)
 
                 logging.info(f"Rotator symbols standardized: {rotator_symbols_standardized}")
@@ -378,8 +375,15 @@ class BybitQuickScalpUnified(Strategy):
                     one_minute_distance = metrics['1mSpread']
                     five_minute_distance = metrics['5mSpread']
                     trend = metrics['Trend']
-                    #mfirsi_signal = metrics['MFI']
-                    mfirsi_signal = self.get_mfirsi_ema(symbol, limit=100, lookback=5, ema_period=5)
+
+                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema_l(
+                        symbol, 
+                        limit=100,
+                        lookback=6,
+                        ema_period=6,
+                        secondary_ema_period=4
+                    )
+                    
                     funding_rate = metrics['Funding']
                     hma_trend = metrics['HMA Trend']
                     eri_trend = metrics['ERI Trend']
@@ -683,8 +687,6 @@ class BybitQuickScalpUnified(Strategy):
                     self.cancel_entries_bybit(symbol, best_ask_price, moving_averages["ma_1m_3_high"], moving_averages["ma_5m_3_high"])
                     # self.cancel_stale_orders_bybit(symbol)
 
-                    time.sleep(5)
-
                 symbol_data = {
                     'symbol': symbol,
                     'min_qty': min_qty,
@@ -716,7 +718,7 @@ class BybitQuickScalpUnified(Strategy):
                 iteration_duration = iteration_end_time - iteration_start_time
                 logging.info(f"Iteration for symbol {symbol} took {iteration_duration:.2f} seconds")
 
-                time.sleep(5)
+                time.sleep(3)
         except Exception as e:
             traceback_info = traceback.format_exc()  # Get the full traceback
             logging.error(f"Exception caught in quickscalp strategy '{symbol}': {e}\nTraceback:\n{traceback_info}")

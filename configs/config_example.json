@@ -2,7 +2,7 @@
   "api": {
     "filename": "quantdatav2_bybit.json",
     "mode": "remote",
-    "url": "https://api.quantumvoid.org/data/",
+    "url": "https://api.quantumvoid.org/volumedata/",
     "data_source_exchange": "bybit"
   },
   "bot": {
@@ -21,12 +21,13 @@
     "liq_price_stop_pct": 0.50,
     "percentile_auto_reduce_enabled": false,
     "auto_reduce_enabled": true,
-    "auto_reduce_start_pct": 0.058,
-    "auto_reduce_maxloss_pct": 0.50,
+    "upnl_threshold_pct": 0.50,
+    "auto_reduce_start_pct": 0.048,
     "max_pos_balance_pct": 0.50,
     "auto_reduce_wallet_exposure_pct": 0.20,
+    "auto_reduce_maxloss_pct": 0.30,
     "auto_reduce_marginbased_enabled": false,
-    "entry_during_autoreduce": true,
+    "entry_during_autoreduce": false,
     "hedge_ratio": 0.10,
     "hedge_price_difference_threshold": 0.10,
     "auto_leverage_upscale": false,

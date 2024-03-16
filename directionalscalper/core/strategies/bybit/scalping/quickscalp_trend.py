@@ -32,6 +32,7 @@ class BybitQuickScalpTrend(Strategy):
         self.helper_interval = 1
         self.position_inactive_threshold = 120
         try:
+            self.upnl_threshold_pct = self.config.upnl_threshold_pct
             self.volume_check = self.config.volume_check
             self.max_usd_value = self.config.max_usd_value
             self.blacklist = self.config.blacklist
@@ -129,6 +130,7 @@ class BybitQuickScalpTrend(Strategy):
             min_dist = self.config.min_distance
             min_vol = self.config.min_volume
 
+            upnl_threshold_pct = self.config.upnl_threshold_pct
             upnl_profit_pct = self.config.upnl_profit_pct
 
             # Stop loss
@@ -350,8 +352,6 @@ class BybitQuickScalpTrend(Strategy):
 
                 # self.check_for_inactivity(long_pos_qty, short_pos_qty)
 
-                time.sleep(5)
-
                 # self.print_trade_quantities_once_bybit(symbol, total_equity, best_ask_price)
 
                 logging.info(f"Rotator symbols standardized: {rotator_symbols_standardized}")
@@ -448,23 +448,25 @@ class BybitQuickScalpTrend(Strategy):
 
                     try:
                         self.auto_reduce_logic_simple(
+                            symbol,
                             min_qty,
                             long_pos_price,
                             short_pos_price,
                             long_pos_qty,
                             short_pos_qty,
                             auto_reduce_enabled,
-                            symbol,
                             total_equity,
-                            open_position_data,
-                            current_price,
-                            long_dynamic_amount,
-                            short_dynamic_amount,
-                            auto_reduce_start_pct,
-                            max_pos_balance_pct
+                            available_equity,
+                            current_market_price=current_price,
+                            long_dynamic_amount=long_dynamic_amount,
+                            short_dynamic_amount=short_dynamic_amount,
+                            auto_reduce_start_pct=auto_reduce_start_pct,
+                            max_pos_balance_pct=max_pos_balance_pct,
+                            upnl_threshold_pct=upnl_threshold_pct,
+                            shared_symbols_data=shared_symbols_data
                         )
                     except Exception as e:
-                        logging.info(f"Exception caught in autoreduce: {e}")
+                        logging.info(f"Exception caught in autoreduce {e}")
 
                     self.auto_reduce_percentile_logic(
                         symbol,
@@ -592,7 +594,9 @@ class BybitQuickScalpTrend(Strategy):
                         long_pos_price,
                         short_pos_price,
                         entry_during_autoreduce,
-                        volume_check
+                        volume_check,
+                        long_take_profit,
+                        short_take_profit
                     )
                     
                     tp_order_counts = self.exchange.bybit.get_open_tp_order_count(symbol)
@@ -676,8 +680,6 @@ class BybitQuickScalpTrend(Strategy):
                     self.cancel_entries_bybit(symbol, best_ask_price, moving_averages["ma_1m_3_high"], moving_averages["ma_5m_3_high"])
                     # self.cancel_stale_orders_bybit(symbol)
 
-                    time.sleep(5)
-
                 symbol_data = {
                     'symbol': symbol,
                     'min_qty': min_qty,
@@ -709,7 +711,7 @@ class BybitQuickScalpTrend(Strategy):
                 iteration_duration = iteration_end_time - iteration_start_time
                 logging.info(f"Iteration for symbol {symbol} took {iteration_duration:.2f} seconds")
 
-                time.sleep(5)
+                time.sleep(3)
         except Exception as e:
             traceback_info = traceback.format_exc()  # Get the full traceback
             logging.error(f"Exception caught in quickscalp strategy '{symbol}': {e}\nTraceback:\n{traceback_info}")

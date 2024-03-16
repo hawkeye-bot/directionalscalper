@@ -56,10 +56,12 @@ def get_available_strategies():
         'bybit_mfirsi_imbalance',
         'bybit_mfirsi_quickscalp',
         'qstrend',
+        'qstrendemas',
         'mfieritrend',
         'qstrendob',
         'qstrendlongonly',
         'qstrend_unified',
+        'qstrend_dca',
     ]
 
 def choose_strategy():
@@ -140,6 +142,9 @@ class DirectionalMarketMaker:
         elif strategy_name.lower() == 'qstrend':
             strategy = bybit_scalping.BybitQuickScalpTrend(self.exchange, self.manager, config.bot, symbols_allowed)
             strategy.run(symbol, rotator_symbols_standardized=rotator_symbols_standardized)
+        elif strategy_name.lower() == 'qstrend_dca':
+            strategy = bybit_scalping.BybitQuickScalpTrendDCA(self.exchange, self.manager, config.bot, symbols_allowed)
+            strategy.run(symbol, rotator_symbols_standardized=rotator_symbols_standardized)
         elif strategy_name.lower() == 'mfieritrend':
             strategy = bybit_scalping.BybitMFIERILongShortTrend(self.exchange, self.manager, config.bot, symbols_allowed)
             strategy.run(symbol, rotator_symbols_standardized=rotator_symbols_standardized)
@@ -152,6 +157,10 @@ class DirectionalMarketMaker:
         elif strategy_name.lower() == 'qstrend_unified':
             strategy = bybit_scalping.BybitQuickScalpUnified(self.exchange, self.manager, config.bot, symbols_allowed)
             strategy.run(symbol, rotator_symbols_standardized=rotator_symbols_standardized)
+        elif strategy_name.lower() == 'qstrendemas':
+            strategy = bybit_scalping.BybitQSTrendDoubleMA(self.exchange, self.manager, config.bot, symbols_allowed)
+            strategy.run(symbol, rotator_symbols_standardized=rotator_symbols_standardized)
+
 
     def get_balance(self, quote, market_type=None, sub_type=None):
         if self.exchange_name == 'bitget':
@@ -511,6 +520,6 @@ if __name__ == '__main__':
             logging.info(f"Active symbols: {active_symbols}")
             logging.info(f"Total active symbols: {len(active_symbols)}")
 
-            time.sleep(30)
+            time.sleep(15)
         except Exception as e:
             logging.error(f"Exception caught in main loop: {e}")
