@@ -30,10 +30,6 @@ class Strategy:
     initialized_symbols = set()
     initialized_symbols_lock = threading.Lock()
 
-    class Bybit:
-        def __init__(self, parent):
-            self.parent = parent
-
     def __init__(self, exchange, config, manager, symbols_allowed=None):
         self.exchange = exchange
         self.config = config
@@ -99,7 +95,7 @@ class Strategy:
         self.dynamic_amount_per_symbol = {}
         self.max_trade_qty_per_symbol = {}
 
-        self.bybit = self.Bybit(self)
+        # self.bybit = self.Bybit(self)
         
     def update_hedged_status(self, symbol, is_hedged):
         self.hedged_positions[symbol] = is_hedged
@@ -712,6 +708,28 @@ class Strategy:
 
         logging.info(f"Updated dynamic amounts for {symbol}. New long_dynamic_amount: {self.long_dynamic_amount[symbol]}, New short_dynamic_amount: {self.short_dynamic_amount[symbol]}")
 
+    def get_available_balance_bybit(self, quote):
+        if self.exchange.has['fetchBalance']:
+            try:
+                # Fetch the balance with params to specify the account type
+                balance_response = self.exchange.fetch_balance({'type': 'swap'})
+
+                # Log the raw response for debugging purposes
+                #logging.info(f"Raw available balance response from Bybit: {balance_response}")
+
+                # Check for the required keys in the response
+                if 'free' in balance_response and quote in balance_response['free']:
+                    # Return the available balance for the specified currency
+                    return float(balance_response['free'][quote])
+                else:
+                    logging.warning(f"Available balance for {quote} not found in the response.")
+
+            except Exception as e:
+                logging.error(f"Error fetching available balance from Bybit: {e}")
+
+        return None
+    
+    
     def get_all_moving_averages(self, symbol, max_retries=3, delay=5):
         for _ in range(max_retries):
             m_moving_averages = self.manager.get_1m_moving_averages(symbol)
@@ -1372,7 +1390,7 @@ class Strategy:
 
     def place_long_tp_order(self, symbol, best_ask_price, long_pos_price, long_pos_qty, long_take_profit, open_orders):
         try:
-            tp_order_counts = self.exchange.bybit.get_open_tp_order_count(symbol)
+            tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
             logging.info(f"Long TP order counts for {symbol}: {tp_order_counts}")
 
             if tp_order_counts['long_tp_count'] == 0:
@@ -1388,7 +1406,7 @@ class Strategy:
 
     def place_short_tp_order(self, symbol, best_bid_price, short_pos_price, short_pos_qty, short_take_profit, open_orders):
         try:
-            tp_order_counts = self.exchange.bybit.get_open_tp_order_count(symbol)
+            tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
             logging.info(f"Short TP order counts for {symbol}: {tp_order_counts}")
 
             if tp_order_counts['short_tp_count'] == 0:
@@ -1786,21 +1804,6 @@ class Strategy:
             return len(decimal_str.split('.')[1])
         else:
             return 0
-
-    def calculate_trade_quantity(self, symbol, leverage):
-        dex_equity = self.exchange.get_balance_bybit('USDT')
-        trade_qty = (float(dex_equity) * self.current_wallet_exposure) / leverage
-        return trade_qty
-
-    def adjust_position_wallet_exposure(self, symbol):
-        if self.current_wallet_exposure > self.wallet_exposure_limit:
-            desired_wallet_exposure = self.wallet_exposure_limit
-            # Calculate the necessary position size to achieve the desired wallet exposure
-            max_trade_qty = self.calculate_trade_quantity(symbol, 1)
-            current_trade_qty = self.calculate_trade_quantity(symbol, 1 / self.current_wallet_exposure)
-            reduction_qty = current_trade_qty - max_trade_qty
-            # Reduce the position to the desired wallet exposure level
-            self.exchange.reduce_position_bybit(symbol, reduction_qty)
 
     def truncate(self, number: float, precision: int) -> float:
         return float(Decimal(number).quantize(Decimal('0.' + '0'*precision), rounding=ROUND_DOWN))
@@ -3118,6 +3121,48 @@ class Strategy:
             else:
                 logging.info(f"Volume or distance conditions not met for {symbol}, skipping entry.")
 
+    def get_mfirsi_ema_secondary_ema(self, symbol: str, limit: int = 100, lookback: int = 5, ema_period: int = 5, secondary_ema_period: int = 3) -> str:
+        # Fetch OHLCV data
+        ohlcv_data = self.exchange.fetch_ohlcv(symbol=symbol, timeframe='1m', limit=limit)
+        df = pd.DataFrame(ohlcv_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+        # Calculate MFI and RSI
+        df['mfi'] = ta.volume.MFIIndicator(high=df['high'], low=df['low'], close=df['close'], volume=df['volume'], window=14, fillna=False).money_flow_index()
+        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+
+        # Calculate EMAs for MFI and RSI
+        df['mfi_ema'] = df['mfi'].ewm(span=ema_period, adjust=False).mean()
+        df['rsi_ema'] = df['rsi'].ewm(span=ema_period, adjust=False).mean()
+
+        # Calculate secondary EMAs for MFI and RSI
+        df['mfi_ema_secondary'] = df['mfi'].ewm(span=secondary_ema_period, adjust=False).mean()
+        df['rsi_ema_secondary'] = df['rsi'].ewm(span=secondary_ema_period, adjust=False).mean()
+
+        # Determine conditions using EMAs and secondary EMAs
+        df['buy_condition'] = (
+            (df['mfi_ema'] < 30) &
+            (df['rsi_ema'] < 40) &
+            (df['mfi_ema_secondary'] < df['mfi_ema']) &
+            (df['rsi_ema_secondary'] < df['rsi_ema']) &
+            (df['open'] < df['close'])
+        ).astype(int)
+        df['sell_condition'] = (
+            (df['mfi_ema'] > 70) &
+            (df['rsi_ema'] > 60) &
+            (df['mfi_ema_secondary'] > df['mfi_ema']) &
+            (df['rsi_ema_secondary'] > df['rsi_ema']) &
+            (df['open'] > df['close'])
+        ).astype(int)
+
+        # Evaluate conditions over the lookback period
+        recent_conditions = df.iloc[-lookback:]
+        if recent_conditions['buy_condition'].sum() > 0:
+            return 'long'
+        elif recent_conditions['sell_condition'].sum() > 0:
+            return 'short'
+        else:
+            return 'neutral'
+        
     def get_mfirsi_ema_secondary_ema_l(self, symbol: str, limit: int = 100, lookback: int = 6, ema_period: int = 6, secondary_ema_period: int = 4) -> str:
         # Fetch OHLCV data
         ohlcv_data = self.exchange.fetch_ohlcv(symbol=symbol, timeframe='1m', limit=limit)
@@ -5519,7 +5564,7 @@ class Strategy:
 
     def update_take_profit_spread_bybit_v2(self, symbol, pos_qty, short_take_profit, long_take_profit, short_pos_price, long_pos_price, positionIdx, order_side, next_tp_update, five_minute_distance, previous_five_minute_distance, max_retries=10):
         # Fetch the current open TP orders for the symbol
-        long_tp_orders, short_tp_orders = self.exchange.bybit.get_open_tp_orders(symbol)
+        long_tp_orders, short_tp_orders = self.exchange.get_open_tp_orders(symbol)
 
         logging.info(f"From update_take_profit_spread : Calculated short TP for {symbol}: {short_take_profit}")
         logging.info(f"From update_take_profit_spread : Calculated long TP for {symbol}: {long_take_profit}")
@@ -5576,7 +5621,7 @@ class Strategy:
     def update_quickscalp_take_profit_bybit(self, symbol, pos_qty, upnl_profit_pct, short_pos_price, long_pos_price, positionIdx, order_side, last_tp_update, max_retries=10):
         try:
             # Fetch the current open TP orders for the symbol
-            long_tp_orders, short_tp_orders = self.exchange.bybit.get_open_tp_orders(symbol)
+            long_tp_orders, short_tp_orders = self.exchange.get_open_tp_orders(symbol)
 
             # Calculate the original TP values using quickscalp method
             original_short_tp = self.calculate_quickscalp_short_take_profit(short_pos_price, symbol, upnl_profit_pct)
@@ -5637,7 +5682,7 @@ class Strategy:
             return last_tp_update
 
         # Fetch current open TP orders for the symbol
-        long_tp_orders, _ = self.exchange.bybit.get_open_tp_orders(symbol)
+        long_tp_orders, _ = self.exchange.get_open_tp_orders(symbol)
 
         # Check if there's an existing TP order with a mismatched quantity or price
         mismatched_qty_orders = [order for order in long_tp_orders if order['qty'] != pos_qty or order['price'] != current_market_price]
@@ -5667,7 +5712,7 @@ class Strategy:
 
     def update_dynamic_quickscalp_tp(self, symbol, best_ask_price, best_bid_price, pos_qty, upnl_profit_pct, short_pos_price, long_pos_price, positionIdx, order_side, last_tp_update, tp_order_counts, max_retries=10):
         # Fetch the current open TP orders and TP order counts for the symbol
-        long_tp_orders, short_tp_orders = self.exchange.bybit.get_open_tp_orders(symbol)
+        long_tp_orders, short_tp_orders = self.exchange.get_open_tp_orders(symbol)
 
         long_tp_count = tp_order_counts['long_tp_count']
         short_tp_count = tp_order_counts['short_tp_count']
@@ -5726,7 +5771,7 @@ class Strategy:
 
     def update_quickscalp_tp(self, symbol, pos_qty, upnl_profit_pct, short_pos_price, long_pos_price, positionIdx, order_side, last_tp_update, tp_order_counts, max_retries=10):
         # Fetch the current open TP orders and TP order counts for the symbol
-        long_tp_orders, short_tp_orders = self.exchange.bybit.get_open_tp_orders(symbol)
+        long_tp_orders, short_tp_orders = self.exchange.get_open_tp_orders(symbol)
         long_tp_count = tp_order_counts['long_tp_count']
         short_tp_count = tp_order_counts['short_tp_count']
 
@@ -5773,8 +5818,8 @@ class Strategy:
         
     def update_take_profit_spread_bybit(self, symbol, pos_qty, short_take_profit, long_take_profit, short_pos_price, long_pos_price, positionIdx, order_side, next_tp_update, five_minute_distance, previous_five_minute_distance, tp_order_counts, max_retries=10):
         # Fetch the current open TP orders and TP order counts for the symbol
-        long_tp_orders, short_tp_orders = self.exchange.bybit.get_open_tp_orders(symbol)
-        #tp_order_counts = self.exchange.bybit.get_open_tp_order_count(symbol)
+        long_tp_orders, short_tp_orders = self.exchange.get_open_tp_orders(symbol)
+        #tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
         long_tp_count = tp_order_counts['long_tp_count']
         short_tp_count = tp_order_counts['short_tp_count']
 

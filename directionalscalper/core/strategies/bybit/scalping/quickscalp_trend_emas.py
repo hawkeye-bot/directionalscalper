@@ -170,13 +170,25 @@ class BybitQSTrendDoubleMA(Strategy):
             if self.config.dashboard_enabled:
                 try:
                     dashboard_path = os.path.join(self.config.shared_data_path, "shared_data.json")
+                    logging.info(f"Dashboard path: {dashboard_path}")
 
                     # Ensure the directory exists
                     os.makedirs(os.path.dirname(dashboard_path), exist_ok=True)
+                    logging.info(f"Directory created: {os.path.dirname(dashboard_path)}")
 
-                    with open(dashboard_path, "r") as file:
-                        # Read or process file data
-                        data = json.load(file)
+                    if os.path.exists(dashboard_path):
+                        with open(dashboard_path, "r") as file:
+                            # Read or process file data
+                            data = json.load(file)
+                            logging.info("Loaded existing data from shared_data.json")
+                    else:
+                        logging.warning("shared_data.json does not exist. Creating a new file.")
+                        data = {}  # Initialize data as an empty dictionary
+
+                    # Save the updated data to the JSON file
+                    with open(dashboard_path, "w") as file:
+                        json.dump(data, file)
+                        logging.info("Data saved to shared_data.json")
 
                 except FileNotFoundError:
                     logging.error(f"File not found: {dashboard_path}")
@@ -186,7 +198,7 @@ class BybitQSTrendDoubleMA(Strategy):
                     # Handle other I/O errors
                 except Exception as e:
                     logging.error(f"An unexpected error occurred: {e}")
-
+                    
                     
             logging.info("Setting up exchange")
             self.exchange.setup_exchange_bybit(symbol)
@@ -555,7 +567,7 @@ class BybitQSTrendDoubleMA(Strategy):
                     if long_pos_price is not None:
                         should_add_to_long = long_pos_price > moving_averages["ma_6_high"] and self.long_trade_condition(best_bid_price, moving_averages["ma_6_low"])
 
-                    open_tp_order_count = self.exchange.bybit.get_open_tp_order_count(symbol)
+                    open_tp_order_count = self.exchange.get_open_tp_order_count(symbol)
 
                     logging.info(f"Open TP order count {open_tp_order_count}")
 
@@ -606,7 +618,7 @@ class BybitQSTrendDoubleMA(Strategy):
                         short_take_profit
                     )
                     
-                    tp_order_counts = self.exchange.bybit.get_open_tp_order_count(symbol)
+                    tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
 
                     long_tp_counts = tp_order_counts['long_tp_count']
                     short_tp_counts = tp_order_counts['short_tp_count']
