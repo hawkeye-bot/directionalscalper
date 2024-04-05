@@ -8,14 +8,14 @@ import traceback
 from threading import Thread, Lock
 from datetime import datetime, timedelta
 
-from directionalscalper.core.strategies.strategy import Strategy
+from directionalscalper.core.strategies.bybit.bybit_strategy import BybitStrategy
 from directionalscalper.core.strategies.logger import Logger
 from live_table_manager import shared_symbols_data
 logging = Logger(logger_name="BybitQuickScalpUnified", filename="BybitQuickScalpUnified.log", stream=True)
 
 symbol_locks = {}
 
-class BybitQuickScalpUnified(Strategy):
+class BybitQuickScalpUnified(BybitStrategy):
     def __init__(self, exchange, manager, config, symbols_allowed=None):
         super().__init__(exchange, config, manager, symbols_allowed)
         self.is_order_history_populated = False
@@ -130,7 +130,7 @@ class BybitQuickScalpUnified(Strategy):
             min_dist = self.config.min_distance
             min_vol = self.config.min_volume
 
-            upnl_threshold_pct = self.config_upnl_threshold_pct
+            upnl_threshold_pct = self.config.upnl_threshold_pct
 
             upnl_profit_pct = self.config.upnl_profit_pct
 
@@ -392,8 +392,8 @@ class BybitQuickScalpUnified(Strategy):
                     trend = metrics['Trend']
                     #mfirsi_signal = metrics['MFI']
                     #mfirsi_signal = self.get_mfirsi_ema(symbol, limit=100, lookback=5, ema_period=5)
-                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=5, ema_period= 5, secondary_ema_period=3)
-                    
+                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=2, ema_period=5, secondary_ema_period=3)
+
                     funding_rate = metrics['Funding']
                     hma_trend = metrics['HMA Trend']
                     eri_trend = metrics['ERI Trend']
@@ -541,7 +541,9 @@ class BybitQuickScalpUnified(Strategy):
                         symbol,
                         total_equity,
                         max_pos_balance_pct,
-                        open_position_data
+                        open_position_data,
+                        long_pos_qty,
+                        short_pos_qty
                     )
 
                     # short_take_profit, long_take_profit = self.calculate_take_profits_based_on_spread(short_pos_price, long_pos_price, symbol, one_minute_distance, previous_one_minute_distance, short_take_profit, long_take_profit)
@@ -579,6 +581,8 @@ class BybitQuickScalpUnified(Strategy):
                     one_hour_atr_value = self.calculate_atr(historical_data)
 
                     logging.info(f"ATR for {symbol} : {one_hour_atr_value}")
+                    tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
+                    #print(type(tp_order_counts))
 
                     # Check for long position
                     if long_pos_qty > 0:
@@ -598,12 +602,17 @@ class BybitQuickScalpUnified(Strategy):
                         except Exception as e:
                             logging.info(f"Exception fetching Short UPNL for {symbol}: {e}")
 
+
+                    long_tp_counts = tp_order_counts['long_tp_count']
+                    short_tp_counts = tp_order_counts['short_tp_count']
+
                     self.bybit_1m_mfi_quickscalp_trend(
                         open_orders,
                         symbol,
                         min_vol,
                         one_minute_volume,
                         mfirsi_signal,
+                        eri_trend,
                         long_dynamic_amount,
                         short_dynamic_amount,
                         long_pos_qty,
@@ -613,11 +622,11 @@ class BybitQuickScalpUnified(Strategy):
                         entry_during_autoreduce,
                         volume_check,
                         long_take_profit,
-                        short_take_profit
+                        short_take_profit,
+                        upnl_profit_pct,
+                        tp_order_counts
                     )
                     
-                    tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
-
                     long_tp_counts = tp_order_counts['long_tp_count']
                     short_tp_counts = tp_order_counts['short_tp_count']
 

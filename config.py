@@ -12,7 +12,7 @@ from pydantic import BaseModel, HttpUrl, ValidationError, validator, DirectoryPa
 from directionalscalper.core.strategies.logger import Logger
 logging = Logger(logger_name="Configuration", filename="Configuration.log", stream=True)
 
-VERSION = "v2.9.0"
+VERSION = "v2.9.2"
 
 class Exchanges(Enum):
     BYBIT = "bybit"
@@ -67,8 +67,16 @@ class Bot(BaseModel):
     whitelist: List[str] = []
     dashboard_enabled: bool = False
     shared_data_path: Optional[str] = None
+    #risk_management: Optional[dict] = None
+    linear_grid: Optional[dict] = None
     # shared_data_path: Optional[DirectoryPath] = None
 
+
+    @validator('linear_grid')
+    def validate_linear_grid(cls, value):
+        if value is None:
+            raise ValueError("linear_grid must be a dictionary - check example config")
+        return value
     
     @validator("min_volume")
     def minimum_min_volume(cls, v):
@@ -224,20 +232,6 @@ class Config(BaseModel):
     exchanges: List[Exchange]  # <-- Changed from List[Exchange]
     logger: Logger
     messengers: dict[str, Union[Discord, Telegram]]
-
-# class Config(BaseModel):
-#     api: API
-#     bot: Bot
-#     exchanges: List[Exchange]
-#     logger: Logger
-#     messengers: dict[str, Union[Discord, Telegram]]
-
-# class Config(BaseModel):
-#     api: API
-#     bot: Bot
-#     exchange: Exchange
-#     logger: Logger
-#     messengers: dict[str, Union[Discord, Telegram]]
 
 def resolve_shared_data_path(relative_path: str) -> Path:
     # Get the directory of the config file

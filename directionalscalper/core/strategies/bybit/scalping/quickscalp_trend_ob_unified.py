@@ -8,16 +8,17 @@ import traceback
 from threading import Thread, Lock
 from datetime import datetime, timedelta
 
-from directionalscalper.core.strategies.strategy import Strategy
+from directionalscalper.core.strategies.bybit.bybit_strategy import BybitStrategy
 from directionalscalper.core.strategies.logger import Logger
 from live_table_manager import shared_symbols_data
 logging = Logger(logger_name="BybitQuickScalpTrendOB", filename="BybitQuickScalpTrendOB.log", stream=True)
 
 symbol_locks = {}
 
-class BybitQuickScalpTrendOB(Strategy):
+class BybitQuickScalpTrendOB(BybitStrategy):
     def __init__(self, exchange, manager, config, symbols_allowed=None):
         super().__init__(exchange, config, manager, symbols_allowed)
+        self.exchange = BybitExchange(exchange.api_key, exchange.secret_key, exchange.passphrase)
         self.is_order_history_populated = False
         self.last_health_check_time = time.time()
         self.health_check_interval = 600
@@ -25,7 +26,7 @@ class BybitQuickScalpTrendOB(Strategy):
         self.last_short_tp_update = datetime.now()
         self.next_long_tp_update = datetime.now() - timedelta(seconds=1)
         self.next_short_tp_update = datetime.now() - timedelta(seconds=1)
-        self.last_cancel_time = 0
+        self.last_helper_order_cancel_time = 0
         self.helper_active = False
         self.helper_wall_size = 5
         self.helper_duration = 5
@@ -369,7 +370,7 @@ class BybitQuickScalpTrendOB(Strategy):
                     trend = metrics['Trend']
                     #mfirsi_signal = metrics['MFI']
                     #mfirsi_signal = self.get_mfirsi_ema(symbol, limit=100, lookback=5, ema_period=5)
-                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=5, ema_period= 5, secondary_ema_period=3)
+                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=2, ema_period=5, secondary_ema_period=3)
                     funding_rate = metrics['Funding']
                     hma_trend = metrics['HMA Trend']
                     eri_trend = metrics['ERI Trend']
@@ -538,12 +539,14 @@ class BybitQuickScalpTrendOB(Strategy):
                         auto_reduce_start_pct,
                         auto_reduce_maxloss_pct
                     )
-
+                    
                     self.cancel_auto_reduce_orders_bybit(
                         symbol,
                         total_equity,
                         max_pos_balance_pct,
-                        open_position_data
+                        open_position_data,
+                        long_pos_qty,
+                        short_pos_qty
                     )
 
                     # short_take_profit, long_take_profit = self.calculate_take_profits_based_on_spread(short_pos_price, long_pos_price, symbol, one_minute_distance, previous_one_minute_distance, short_take_profit, long_take_profit)
@@ -582,6 +585,9 @@ class BybitQuickScalpTrendOB(Strategy):
 
                     logging.info(f"ATR for {symbol} : {one_hour_atr_value}")
 
+                    tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
+                    #print(type(tp_order_counts))
+
                     # Check for long position
                     if long_pos_qty > 0:
                         try:
@@ -600,6 +606,10 @@ class BybitQuickScalpTrendOB(Strategy):
                         except Exception as e:
                             logging.info(f"Exception fetching Short UPNL for {symbol}: {e}")
 
+
+                    long_tp_counts = tp_order_counts['long_tp_count']
+                    short_tp_counts = tp_order_counts['short_tp_count']
+
                     self.bybit_1m_mfi_quickscalp_trend(
                         open_orders,
                         symbol,
@@ -615,14 +625,12 @@ class BybitQuickScalpTrendOB(Strategy):
                         entry_during_autoreduce,
                         volume_check,
                         long_take_profit,
-                        short_take_profit
+                        short_take_profit,
+                        upnl_profit_pct,
+                        tp_order_counts
                     )
                     
-                    tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
-
-                    long_tp_counts = tp_order_counts['long_tp_count']
-                    short_tp_counts = tp_order_counts['short_tp_count']
-
+                    
                     logging.info(f"Long tp counts: {long_tp_counts}")
                     logging.info(f"Short tp counts: {short_tp_counts}")
 
@@ -692,7 +700,7 @@ class BybitQuickScalpTrendOB(Strategy):
                                 tp_order_counts=tp_order_counts
                             )
 
-                    if self.test_orders_enabled and current_time - self.last_cancel_time >= self.helper_interval:
+                    if self.test_orders_enabled and current_time - self.last_helper_order_cancel_time >= self.helper_interval:
                         if symbol in open_symbols:
                             self.helper_active = True
                             self.helperv2(symbol, short_dynamic_amount, long_dynamic_amount)

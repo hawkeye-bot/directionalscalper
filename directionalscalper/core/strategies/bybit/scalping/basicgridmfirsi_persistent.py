@@ -9,13 +9,14 @@ from threading import Thread, Lock
 from datetime import datetime, timedelta
 
 from directionalscalper.core.strategies.bybit.bybit_strategy import BybitStrategy
+from directionalscalper.core.exchanges.bybit import BybitExchange
 from directionalscalper.core.strategies.logger import Logger
 from live_table_manager import shared_symbols_data
-logging = Logger(logger_name="BybitQuickScalpTrendDCA", filename="BybitQuickScalpTrendDCA.log", stream=True)
+logging = Logger(logger_name="BybitBasicGridMFIRSIPersisent", filename="BybitBasicGridMFIRSIPersisent.log", stream=True)
 
 symbol_locks = {}
 
-class BybitQuickScalpTrendDCA(BybitStrategy):
+class BybitBasicGridMFIRSIPersisent(BybitStrategy):
     def __init__(self, exchange, manager, config, symbols_allowed=None):
         super().__init__(exchange, config, manager, symbols_allowed)
         self.is_order_history_populated = False
@@ -25,18 +26,34 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
         self.last_short_tp_update = datetime.now()
         self.next_long_tp_update = datetime.now() - timedelta(seconds=1)
         self.next_short_tp_update = datetime.now() - timedelta(seconds=1)
-        self.last_cancel_time = 0
+        self.last_helper_order_cancel_time = 0
         self.helper_active = False
         self.helper_wall_size = 5
         self.helper_duration = 5
         self.helper_interval = 1
         self.position_inactive_threshold = 120
         try:
+            self.wallet_exposure_limit = self.config.wallet_exposure_limit
+            self.user_defined_leverage_long = self.config.user_defined_leverage_long
+            self.user_defined_leverage_short = self.config.user_defined_leverage_short
+            self.levels = self.config.linear_grid['levels']
+            self.strength = self.config.linear_grid['strength']
+            self.outer_price_distance = self.config.linear_grid['outer_price_distance']
+            self.long_mode = self.config.linear_grid['long_mode']
+            self.short_mode = self.config.linear_grid['short_mode']
+            self.reissue_threshold = self.config.linear_grid['reissue_threshold']
+            self.buffer_percentage = self.config.linear_grid['buffer_percentage']
+            self.enforce_full_grid = self.config.linear_grid['enforce_full_grid']
+            # self.reissue_threshold_inposition = self.config.linear_grid['reissue_threshold_inposition']
             self.upnl_threshold_pct = self.config.upnl_threshold_pct
             self.volume_check = self.config.volume_check
             self.max_usd_value = self.config.max_usd_value
             self.blacklist = self.config.blacklist
-            self.test_orders_enabled = self.config.test_orders_enabled
+            try:
+                self.test_orders_enabled = self.config.test_orders_enabled
+                # Initialization of other attributes
+            except AttributeError as e:
+                logging.error(f"Failed to initialize attributes from config: {e}")
             self.upnl_profit_pct = self.config.upnl_profit_pct
             self.stoploss_enabled = self.config.stoploss_enabled
             self.stoploss_upnl_pct = self.config.stoploss_upnl_pct
@@ -81,6 +98,9 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
             logging.info(f"Starting to process symbol: {symbol}")
             logging.info(f"Initializing default values for symbol: {symbol}")
 
+            previous_long_pos_qty = 0
+            previous_short_pos_qty = 0
+
             # position_inactive_threshold = 60
 
             min_qty = None
@@ -107,6 +127,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
 
             # Clean out orders
             self.exchange.cancel_all_orders_for_symbol_bybit(symbol)
+            logging.info(f"Canceled all orders for {symbol}")
 
             # Check leverages only at startup
             self.current_leverage = self.exchange.get_current_max_leverage_bybit(symbol)
@@ -126,12 +147,25 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
             max_retries = 5
             retry_delay = 5
 
-            upnl_threshold_pct = self.config.upnl_threshold_pct
+
+            test_orders_enabled = self.config.test_orders_enabled
             
+
+            levels = self.config.linear_grid['levels']
+            strength = self.config.linear_grid['strength']
+            outer_price_distance = self.config.linear_grid['outer_price_distance']
+            long_mode = self.config.linear_grid['long_mode']
+            short_mode = self.config.linear_grid['short_mode']
+            reissue_threshold = self.config.linear_grid['reissue_threshold']
+            buffer_percentage = self.config.linear_grid['buffer_percentage']
+            enforce_full_grid = self.config.linear_grid['enforce_full_grid']
+            # reissue_threshold_inposition = self.config.linear_grid['reissue_threshold_inposition']
+
             volume_check = self.config.volume_check
             min_dist = self.config.min_distance
             min_vol = self.config.min_volume
 
+            upnl_threshold_pct = self.config.upnl_threshold_pct
             upnl_profit_pct = self.config.upnl_profit_pct
 
             # Stop loss
@@ -248,7 +282,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                 open_position_data = self.retry_api_call(self.exchange.get_all_open_positions_bybit)
 
                 
-                #logging.info(f"Open position data: {open_position_data}")
+                logging.info(f"Open position data for {symbol}: {open_position_data}")
 
                 position_details = {}
 
@@ -300,12 +334,15 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
 
                 # Fetch equity data less frequently or if it's not available yet
                 if current_time - last_equity_fetch_time > equity_refresh_interval or total_equity is None:
-                    total_equity = self.retry_api_call(self.exchange.get_balance_bybit, quote_currency)
+                    total_equity = self.retry_api_call(self.exchange.get_futures_balance_bybit, quote_currency)
                     available_equity = self.retry_api_call(self.exchange.get_available_balance_bybit, quote_currency)
                     last_equity_fetch_time = current_time
 
                     logging.info(f"Total equity: {total_equity}")
                     logging.info(f"Available equity: {available_equity}")
+                    
+                    # Log the type of total_equity
+                    logging.info(f"Type of total_equity: {type(total_equity)}")
                     
                     # If total_equity is still None after fetching, log a warning and skip to the next iteration
                     if total_equity is None:
@@ -390,10 +427,13 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                     trend = metrics['Trend']
                     #mfirsi_signal = metrics['MFI']
                     #mfirsi_signal = self.get_mfirsi_ema(symbol, limit=100, lookback=5, ema_period=5)
-                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=2, ema_period=5, secondary_ema_period=3)
+                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=1, ema_period=5, secondary_ema_period=3)
+
                     funding_rate = metrics['Funding']
                     hma_trend = metrics['HMA Trend']
                     eri_trend = metrics['ERI Trend']
+
+                    logging.info(f"{symbol} ERI Trend: {eri_trend}")
 
                     logging.info(f"{symbol} MFIRSI Signal: {mfirsi_signal}")
 
@@ -413,6 +453,19 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
 
                     long_pos_qty = position_details.get(symbol, {}).get('long', {}).get('qty', 0)
                     short_pos_qty = position_details.get(symbol, {}).get('short', {}).get('qty', 0)
+
+                    # Check if a position has been closed
+                    if previous_long_pos_qty > 0 and long_pos_qty == 0:
+                        logging.info(f"Long position closed for {symbol}. Canceling long grid orders.")
+                        self.cancel_grid_orders(symbol, "buy")
+
+                    if previous_short_pos_qty > 0 and short_pos_qty == 0:
+                        logging.info(f"Short position closed for {symbol}. Canceling short grid orders.")
+                        self.cancel_grid_orders(symbol, "sell")
+
+                    # Update the previous position quantities
+                    previous_long_pos_qty = long_pos_qty
+                    previous_short_pos_qty = short_pos_qty
 
                     logging.info(f"Rotator symbol trading: {symbol}")
                                 
@@ -471,16 +524,16 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                             auto_reduce_enabled,
                             total_equity,
                             available_equity,
-                            current_price,
-                            long_dynamic_amount,
-                            short_dynamic_amount,
-                            auto_reduce_start_pct,
-                            max_pos_balance_pct,
-                            upnl_threshold_pct,
-                            shared_symbols_data
+                            current_market_price=current_price,
+                            long_dynamic_amount=long_dynamic_amount,
+                            short_dynamic_amount=short_dynamic_amount,
+                            auto_reduce_start_pct=auto_reduce_start_pct,
+                            max_pos_balance_pct=max_pos_balance_pct,
+                            upnl_threshold_pct=upnl_threshold_pct,
+                            shared_symbols_data=shared_symbols_data
                         )
                     except Exception as e:
-                        logging.info(f"Exception caught in autoreduce: {e}")
+                        logging.info(f"Exception caught in autoreduce {e}")
 
                     self.auto_reduce_percentile_logic(
                         symbol,
@@ -543,6 +596,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                         short_pos_qty
                     )
 
+
                     # short_take_profit, long_take_profit = self.calculate_take_profits_based_on_spread(short_pos_price, long_pos_price, symbol, one_minute_distance, previous_one_minute_distance, short_take_profit, long_take_profit)
                     #short_take_profit, long_take_profit = self.calculate_take_profits_based_on_spread(short_pos_price, long_pos_price, symbol, five_minute_distance, previous_five_minute_distance, short_take_profit, long_take_profit)
                     previous_five_minute_distance = five_minute_distance
@@ -604,27 +658,55 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                     long_tp_counts = tp_order_counts['long_tp_count']
                     short_tp_counts = tp_order_counts['short_tp_count']
 
-                    self.bybit_1m_mfi_quickscalp_trend(
-                        open_orders,
+                    self.linear_grid_handle_positions_mfirsi_persistent(
                         symbol,
-                        min_vol,
-                        one_minute_volume,
-                        mfirsi_signal,
-                        long_dynamic_amount,
-                        short_dynamic_amount,
-                        long_pos_qty,
-                        short_pos_qty,
+                        open_symbols,
+                        total_equity,
                         long_pos_price,
                         short_pos_price,
-                        entry_during_autoreduce,
-                        volume_check,
+                        long_pos_qty,
+                        short_pos_qty,
+                        levels,
+                        strength,
+                        outer_price_distance,
+                        reissue_threshold,
+                        self.wallet_exposure_limit,
+                        self.user_defined_leverage_long,
+                        self.user_defined_leverage_short,
+                        long_mode,
+                        short_mode,
+                        buffer_percentage,
+                        self.symbols_allowed,
+                        enforce_full_grid,
+                        mfirsi_signal,
+                        upnl_profit_pct,
                         long_take_profit,
                         short_take_profit,
-                        upnl_profit_pct,
                         tp_order_counts
                     )
                     
-                    
+                    # self.linear_grid_handle_positions_mfirsi_persistent(
+                    #     symbol,
+                    #     open_symbols,
+                    #     total_equity,
+                    #     long_pos_qty,
+                    #     short_pos_qty,
+                    #     levels,
+                    #     strength,
+                    #     outer_price_distance,
+                    #     reissue_threshold,
+                    #     self.wallet_exposure_limit,
+                    #     self.user_defined_leverage_long,
+                    #     self.user_defined_leverage_short,
+                    #     long_mode,
+                    #     short_mode,
+                    #     buffer_percentage,
+                    #     self.symbols_allowed,
+                    #     enforce_full_grid,
+                    #     mfirsi_signal
+                    # )
+
+
                     logging.info(f"Long tp counts: {long_tp_counts}")
                     logging.info(f"Short tp counts: {short_tp_counts}")
 
@@ -690,7 +772,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                                 tp_order_counts=tp_order_counts
                             )
 
-                    if self.test_orders_enabled and current_time - self.last_cancel_time >= self.helper_interval:
+                    if self.test_orders_enabled and current_time - self.last_helper_order_cancel_time >= self.helper_interval:
                         if symbol in open_symbols:
                             self.helper_active = True
                             self.helperv2(symbol, short_dynamic_amount, long_dynamic_amount)
@@ -698,7 +780,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                             logging.info(f"Skipping test orders for {symbol} as it's not in open symbols list.")
                     
 
-                    self.cancel_entries_bybit(symbol, best_ask_price, moving_averages["ma_1m_3_high"], moving_averages["ma_5m_3_high"])
+                    # self.cancel_entries_bybit(symbol, best_ask_price, moving_averages["ma_1m_3_high"], moving_averages["ma_5m_3_high"])
                     # self.cancel_stale_orders_bybit(symbol)
 
                 symbol_data = {
@@ -723,11 +805,37 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                 shared_symbols_data[symbol] = symbol_data
 
                 if self.config.dashboard_enabled:
-                    data_to_save = copy.deepcopy(shared_symbols_data)
-                    with open(dashboard_path, "w") as f:
-                        json.dump(data_to_save, f)
-                    self.update_shared_data(symbol_data, open_position_data, len(open_symbols))
+                    try:
+                        dashboard_path = os.path.join(self.config.shared_data_path, "shared_data.json")
+                        logging.info(f"Dashboard path: {dashboard_path}")
 
+                        # Ensure the directory exists
+                        os.makedirs(os.path.dirname(dashboard_path), exist_ok=True)
+                        logging.info(f"Directory created: {os.path.dirname(dashboard_path)}")
+
+                        if os.path.exists(dashboard_path):
+                            with open(dashboard_path, "r") as file:
+                                # Read or process file data
+                                data = json.load(file)
+                                logging.info("Loaded existing data from shared_data.json")
+                        else:
+                            logging.warning("shared_data.json does not exist. Creating a new file.")
+                            data = {}  # Initialize data as an empty dictionary
+
+                        # Save the updated data to the JSON file
+                        with open(dashboard_path, "w") as file:
+                            json.dump(data, file)
+                            logging.info("Data saved to shared_data.json")
+
+                    except FileNotFoundError:
+                        logging.error(f"File not found: {dashboard_path}")
+                        # Handle the absence of the file, e.g., by creating it or using default data
+                    except IOError as e:
+                        logging.error(f"I/O error occurred: {e}")
+                        # Handle other I/O errors
+                    except Exception as e:
+                        logging.error(f"An unexpected error occurred: {e}")
+                        
                 iteration_end_time = time.time()  # Record the end time of the iteration
                 iteration_duration = iteration_end_time - iteration_start_time
                 logging.info(f"Iteration for symbol {symbol} took {iteration_duration:.2f} seconds")

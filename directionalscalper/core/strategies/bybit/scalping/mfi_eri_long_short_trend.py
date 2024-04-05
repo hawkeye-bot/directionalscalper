@@ -8,14 +8,14 @@ import traceback
 from threading import Thread, Lock
 from datetime import datetime, timedelta
 
-from directionalscalper.core.strategies.strategy import Strategy
+from directionalscalper.core.strategies.bybit.bybit_strategy import BybitStrategy
 from directionalscalper.core.strategies.logger import Logger
 from live_table_manager import shared_symbols_data
 logging = Logger(logger_name="BybitMFIERILongShortTrend", filename="BybitMFIERILongShortTrend.log", stream=True)
 
 symbol_locks = {}
 
-class BybitMFIERILongShortTrend(Strategy):
+class BybitMFIERILongShortTrend(BybitStrategy):
     def __init__(self, exchange, manager, config, symbols_allowed=None):
         super().__init__(exchange, config, manager, symbols_allowed)
         self.is_order_history_populated = False
@@ -364,7 +364,7 @@ class BybitMFIERILongShortTrend(Strategy):
                     trend = metrics['Trend']
                     # mfirsi_signal = metrics['MFI']
                     #mfirsi_signal = self.get_mfirsi_ema(symbol, limit=100, lookback=5)
-                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=5, ema_period= 5, secondary_ema_period=3)
+                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=2, ema_period=5, secondary_ema_period=3)
                     funding_rate = metrics['Funding']
                     hma_trend = metrics['HMA Trend']
                     eri_trend = metrics['ERI Trend']
@@ -509,8 +509,11 @@ class BybitMFIERILongShortTrend(Strategy):
                         symbol,
                         total_equity,
                         max_pos_balance_pct,
-                        open_position_data
+                        open_position_data,
+                        long_pos_qty,
+                        short_pos_qty
                     )
+
                     short_take_profit, long_take_profit = self.calculate_take_profits_based_on_spread(short_pos_price, long_pos_price, symbol, one_minute_distance, previous_one_minute_distance, short_take_profit, long_take_profit)
                     #short_take_profit, long_take_profit = self.calculate_take_profits_based_on_spread(short_pos_price, long_pos_price, symbol, five_minute_distance, previous_five_minute_distance, short_take_profit, long_take_profit)
                     previous_five_minute_distance = five_minute_distance
@@ -554,6 +557,9 @@ class BybitMFIERILongShortTrend(Strategy):
 
                     logging.info(f"ATR for {symbol} : {one_hour_atr_value}")
 
+                    tp_order_counts = self.exchange.get_open_tp_order_count(symbol)
+                    #print(type(tp_order_counts))
+
                     # Check for long position
                     if long_pos_qty > 0:
                         try:
@@ -571,6 +577,10 @@ class BybitMFIERILongShortTrend(Strategy):
                             logging.info(f"Short UPNL for {symbol}: {short_upnl}")
                         except Exception as e:
                             logging.info(f"Exception fetching Short UPNL for {symbol}: {e}")
+
+
+                    long_tp_counts = tp_order_counts['long_tp_count']
+                    short_tp_counts = tp_order_counts['short_tp_count']
 
                     self.bybit_1m_mfi_eri_walls(
                         open_orders,

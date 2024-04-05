@@ -9,15 +9,17 @@ from threading import Thread, Lock
 from datetime import datetime, timedelta
 
 from directionalscalper.core.strategies.bybit.bybit_strategy import BybitStrategy
+from directionalscalper.core.exchanges.bybit import BybitExchange
 from directionalscalper.core.strategies.logger import Logger
 from live_table_manager import shared_symbols_data
-logging = Logger(logger_name="BybitQuickScalpTrendDCA", filename="BybitQuickScalpTrendDCA.log", stream=True)
+logging = Logger(logger_name="BybitMFIRSIQuickScalpLong", filename="BybitMFIRSIQuickScalpShort.log", stream=True)
 
 symbol_locks = {}
 
-class BybitQuickScalpTrendDCA(BybitStrategy):
+class BybitMFIRSIQuickScalpShort(BybitStrategy):
     def __init__(self, exchange, manager, config, symbols_allowed=None):
         super().__init__(exchange, config, manager, symbols_allowed)
+        self.exchange = BybitExchange(exchange.api_key, exchange.secret_key, exchange.passphrase)
         self.is_order_history_populated = False
         self.last_health_check_time = time.time()
         self.health_check_interval = 600
@@ -25,7 +27,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
         self.last_short_tp_update = datetime.now()
         self.next_long_tp_update = datetime.now() - timedelta(seconds=1)
         self.next_short_tp_update = datetime.now() - timedelta(seconds=1)
-        self.last_cancel_time = 0
+        self.last_helper_order_cancel_time = 0
         self.helper_active = False
         self.helper_wall_size = 5
         self.helper_duration = 5
@@ -83,6 +85,9 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
 
             # position_inactive_threshold = 60
 
+            previous_long_pos_qty = 0
+            previous_short_pos_qty = 0
+
             min_qty = None
             current_price = None
             total_equity = None
@@ -125,13 +130,12 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
             quote_currency = "USDT"
             max_retries = 5
             retry_delay = 5
-
-            upnl_threshold_pct = self.config.upnl_threshold_pct
             
             volume_check = self.config.volume_check
             min_dist = self.config.min_distance
             min_vol = self.config.min_volume
 
+            upnl_threshold_pct = self.config.upnl_threshold_pct
             upnl_profit_pct = self.config.upnl_profit_pct
 
             # Stop loss
@@ -300,7 +304,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
 
                 # Fetch equity data less frequently or if it's not available yet
                 if current_time - last_equity_fetch_time > equity_refresh_interval or total_equity is None:
-                    total_equity = self.retry_api_call(self.exchange.get_balance_bybit, quote_currency)
+                    total_equity = self.retry_api_call(self.exchange.get_futures_balance_bybit, quote_currency)
                     available_equity = self.retry_api_call(self.exchange.get_available_balance_bybit, quote_currency)
                     last_equity_fetch_time = current_time
 
@@ -390,11 +394,14 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                     trend = metrics['Trend']
                     #mfirsi_signal = metrics['MFI']
                     #mfirsi_signal = self.get_mfirsi_ema(symbol, limit=100, lookback=5, ema_period=5)
-                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=2, ema_period=5, secondary_ema_period=3)
+                    mfirsi_signal = self.get_mfirsi_ema_secondary_ema(symbol, limit=100, lookback=1, ema_period=5, secondary_ema_period=3)
+
                     funding_rate = metrics['Funding']
                     hma_trend = metrics['HMA Trend']
                     eri_trend = metrics['ERI Trend']
 
+
+                    logging.info(f"{symbol} ERI Trend: {eri_trend}")
                     logging.info(f"{symbol} MFIRSI Signal: {mfirsi_signal}")
 
                     fivemin_top_signal = metrics['Top Signal 5m']
@@ -413,6 +420,17 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
 
                     long_pos_qty = position_details.get(symbol, {}).get('long', {}).get('qty', 0)
                     short_pos_qty = position_details.get(symbol, {}).get('short', {}).get('qty', 0)
+
+                    # Check if a position has been closed
+                    if previous_long_pos_qty > 0 and long_pos_qty == 0:
+                        logging.info(f"Long position closed for {symbol}. Canceling orders and moving on.")
+                        self.cleanup_before_termination(symbol)
+                        break
+
+                    if previous_short_pos_qty > 0 and short_pos_qty == 0:
+                        logging.info(f"Short position closed for {symbol}. Canceling orders and moving on.")
+                        self.cleanup_before_termination(symbol)
+                        break
 
                     logging.info(f"Rotator symbol trading: {symbol}")
                                 
@@ -471,16 +489,16 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                             auto_reduce_enabled,
                             total_equity,
                             available_equity,
-                            current_price,
-                            long_dynamic_amount,
-                            short_dynamic_amount,
-                            auto_reduce_start_pct,
-                            max_pos_balance_pct,
-                            upnl_threshold_pct,
-                            shared_symbols_data
+                            current_market_price=current_price,
+                            long_dynamic_amount=long_dynamic_amount,
+                            short_dynamic_amount=short_dynamic_amount,
+                            auto_reduce_start_pct=auto_reduce_start_pct,
+                            max_pos_balance_pct=max_pos_balance_pct,
+                            upnl_threshold_pct=upnl_threshold_pct,
+                            shared_symbols_data=shared_symbols_data
                         )
                     except Exception as e:
-                        logging.info(f"Exception caught in autoreduce: {e}")
+                        logging.info(f"Exception caught in autoreduce {e}")
 
                     self.auto_reduce_percentile_logic(
                         symbol,
@@ -604,27 +622,41 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                     long_tp_counts = tp_order_counts['long_tp_count']
                     short_tp_counts = tp_order_counts['short_tp_count']
 
-                    self.bybit_1m_mfi_quickscalp_trend(
+                    self.bybit_1m_mfi_quickscalp_trend_short_only(
                         open_orders,
                         symbol,
                         min_vol,
                         one_minute_volume,
                         mfirsi_signal,
-                        long_dynamic_amount,
                         short_dynamic_amount,
-                        long_pos_qty,
                         short_pos_qty,
-                        long_pos_price,
                         short_pos_price,
-                        entry_during_autoreduce,
                         volume_check,
-                        long_take_profit,
                         short_take_profit,
                         upnl_profit_pct,
                         tp_order_counts
                     )
                     
-                    
+                    # self.bybit_1m_mfi_quickscalp_trend(
+                    #     open_orders,
+                    #     symbol,
+                    #     min_vol,
+                    #     one_minute_volume,
+                    #     mfirsi_signal,
+                    #     long_dynamic_amount,
+                    #     short_dynamic_amount,
+                    #     long_pos_qty,
+                    #     short_pos_qty,
+                    #     long_pos_price,
+                    #     short_pos_price,
+                    #     entry_during_autoreduce,
+                    #     volume_check,
+                    #     long_take_profit,
+                    #     short_take_profit,
+                    #     upnl_profit_pct,
+                    #     tp_order_counts
+                    # )
+                
                     logging.info(f"Long tp counts: {long_tp_counts}")
                     logging.info(f"Short tp counts: {short_tp_counts}")
 
@@ -636,15 +668,6 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
 
                     logging.info(f"Long TP order count for {symbol} is {tp_order_counts['long_tp_count']}")
                     logging.info(f"Short TP order count for {symbol} is {tp_order_counts['short_tp_count']}")
-
-                    self.place_long_tp_order(
-                        symbol,
-                        best_ask_price,
-                        long_pos_price,
-                        long_pos_qty,
-                        long_take_profit,
-                        open_orders
-                    )
 
                     self.place_short_tp_order(
                         symbol,
@@ -659,22 +682,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                     logging.info(f"Current time: {current_latest_time}")
                     logging.info(f"Next long TP update time: {self.next_long_tp_update}")
                     logging.info(f"Next short TP update time: {self.next_short_tp_update}")
-
-                    # Check for long positions
-                    if long_pos_qty > 0:
-                        if current_latest_time >= self.next_long_tp_update:
-                            self.next_long_tp_update = self.update_quickscalp_tp(
-                                symbol=symbol, 
-                                pos_qty=long_pos_qty, 
-                                upnl_profit_pct=upnl_profit_pct,  # Add the quickscalp percentage
-                                short_pos_price=short_pos_price,
-                                long_pos_price=long_pos_price,
-                                positionIdx=1, 
-                                order_side="sell", 
-                                last_tp_update=self.next_long_tp_update,
-                                tp_order_counts=tp_order_counts
-                            )
-
+                    
                     # Check for short positions
                     if short_pos_qty > 0:
                         if current_latest_time >= self.next_short_tp_update:
@@ -690,7 +698,7 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                                 tp_order_counts=tp_order_counts
                             )
 
-                    if self.test_orders_enabled and current_time - self.last_cancel_time >= self.helper_interval:
+                    if self.test_orders_enabled and current_time - self.last_helper_order_cancel_time >= self.helper_interval:
                         if symbol in open_symbols:
                             self.helper_active = True
                             self.helperv2(symbol, short_dynamic_amount, long_dynamic_amount)
@@ -723,11 +731,37 @@ class BybitQuickScalpTrendDCA(BybitStrategy):
                 shared_symbols_data[symbol] = symbol_data
 
                 if self.config.dashboard_enabled:
-                    data_to_save = copy.deepcopy(shared_symbols_data)
-                    with open(dashboard_path, "w") as f:
-                        json.dump(data_to_save, f)
-                    self.update_shared_data(symbol_data, open_position_data, len(open_symbols))
+                    try:
+                        dashboard_path = os.path.join(self.config.shared_data_path, "shared_data.json")
+                        logging.info(f"Dashboard path: {dashboard_path}")
 
+                        # Ensure the directory exists
+                        os.makedirs(os.path.dirname(dashboard_path), exist_ok=True)
+                        logging.info(f"Directory created: {os.path.dirname(dashboard_path)}")
+
+                        if os.path.exists(dashboard_path):
+                            with open(dashboard_path, "r") as file:
+                                # Read or process file data
+                                data = json.load(file)
+                                logging.info("Loaded existing data from shared_data.json")
+                        else:
+                            logging.warning("shared_data.json does not exist. Creating a new file.")
+                            data = {}  # Initialize data as an empty dictionary
+
+                        # Save the updated data to the JSON file
+                        with open(dashboard_path, "w") as file:
+                            json.dump(data, file)
+                            logging.info("Data saved to shared_data.json")
+
+                    except FileNotFoundError:
+                        logging.error(f"File not found: {dashboard_path}")
+                        # Handle the absence of the file, e.g., by creating it or using default data
+                    except IOError as e:
+                        logging.error(f"I/O error occurred: {e}")
+                        # Handle other I/O errors
+                    except Exception as e:
+                        logging.error(f"An unexpected error occurred: {e}")
+                        
                 iteration_end_time = time.time()  # Record the end time of the iteration
                 iteration_duration = iteration_end_time - iteration_start_time
                 logging.info(f"Iteration for symbol {symbol} took {iteration_duration:.2f} seconds")
